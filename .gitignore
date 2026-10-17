@@ -8,3 +8,5 @@ out/
 npm-debug.log*
 *.tsbuildinfo
 .DS_Store
+DEMO_GUIDE.md
+ShortageBridge-plan.md
