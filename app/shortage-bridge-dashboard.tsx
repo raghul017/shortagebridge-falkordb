@@ -103,6 +103,7 @@ export default function ShortageBridgeDashboard() {
   const [brief, setBrief] = useState<EvidenceBriefResponse | null>(null);
   const [briefState, setBriefState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [briefError, setBriefError] = useState("");
+  const [reviewedAction, setReviewedAction] = useState<string | null>(null);
 
   const loadAnalysis = useCallback(async () => {
     setState("loading");
@@ -164,11 +165,11 @@ export default function ShortageBridgeDashboard() {
         <div className="hero-copy">
           <div className="eyebrow"><span className="bridge-mark" aria-hidden="true">⌁</span> ShortageBridge</div>
           <h1>Trace shortage context.<br /><em>Keep the human in review.</em></h1>
-          <p className="hero-summary">A graph-backed operational prototype that connects a public shortage record to clearly labeled, synthetic demo hospital evidence.</p>
+          <p className="hero-summary">A graph-backed operational prototype that connects a public shortage record to clearly labeled, synthetic demo hospital evidence via FalkorDB.</p>
         </div>
         <aside className="safety-note" aria-label="Prototype safety boundary">
           <StatusPill tone="neutral">Human review required</StatusPill>
-          <p>Not clinical advice, a substitute recommendation, a live-stock feed, or an ordering system.</p>
+          <p>Not clinical advice, a substitute recommendation, a live-stock feed, or an automated ordering system.</p>
         </aside>
       </header>
 
@@ -181,7 +182,7 @@ export default function ShortageBridgeDashboard() {
         <div className="control-actions">
           <span className={`connection ${health?.ok ? "connection-ok" : ""}`} aria-live="polite">
             <span className="connection-dot" aria-hidden="true" />
-            {health?.ok ? "Graph connected" : state === "loading" ? "Checking graph" : "Graph status unavailable"}
+            {health?.ok ? "FalkorDB connected" : state === "loading" ? "Checking graph…" : "Graph unavailable"}
           </span>
           <button type="button" className="refresh-button" onClick={() => void loadAnalysis()} disabled={state === "loading"}>
             {state === "loading" ? "Loading analysis…" : "Refresh analysis"}
@@ -280,11 +281,12 @@ export default function ShortageBridgeDashboard() {
           </section>
 
           {/* STEP 3: SYNTHETIC HOSPITAL IMPACT & 4-DAY RUNWAY */}
-          <section className="runway-card synthetic-boundary-card" aria-labelledby="runway-heading">
+          <section className="runway-card" aria-labelledby="runway-heading">
             <div>
               <StatusPill tone="synthetic">Synthetic demo data</StatusPill>
               <p className="section-kicker">Step 3A · Illustrative Stock Runway</p>
-              <h2 id="runway-heading"><span>{primaryImpact.syntheticInventory.estimatedRunwayDays}</span> days</h2>
+              <h2 id="runway-heading">Estimated runway</h2>
+              <span className="runway-number">{primaryImpact.syntheticInventory.estimatedRunwayDays}<span className="runway-unit"> days</span></span>
             </div>
             <div className="formula-block">
               <p>{primaryImpact.syntheticInventory.formula}</p>
@@ -311,11 +313,11 @@ export default function ShortageBridgeDashboard() {
                   <StatusPill tone="synthetic">Synthetic service</StatusPill>
                   <h3>{impact.syntheticService.name}</h3>
                   <div className="review-link">
-                    <span aria-hidden="true">↳</span>
+                    <span className="review-link-icon" aria-hidden="true">↳</span>
                     <p>Follows protocol: <strong>{impact.syntheticReview.protocol.name}</strong></p>
                   </div>
                   <div className="review-link">
-                    <span aria-hidden="true">↳</span>
+                    <span className="review-link-icon" aria-hidden="true">↳</span>
                     <p>Escalates review to: <strong>{impact.syntheticReview.role.name}</strong></p>
                   </div>
                 </article>
@@ -388,6 +390,38 @@ export default function ShortageBridgeDashboard() {
                   {brief.evidenceIds.map((id) => (
                     <code key={id}>{id}</code>
                   ))}
+                </div>
+
+                <div className="review-action-panel">
+                  {!reviewedAction ? (
+                    <div className="review-action-prompt">
+                      <div>
+                        <strong>Human Review Sign-off</strong>
+                        <p>Confirm that pharmacy operations has reviewed this graph evidence and logged escalation advisories.</p>
+                      </div>
+                      <button
+                        type="button"
+                        className="approve-action-button"
+                        onClick={() =>
+                          setReviewedAction(
+                            `Signed off at ${new Date().toLocaleTimeString("en-US", {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })} IST`,
+                          )
+                        }
+                      >
+                        Sign Off on Operational Review ✓
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="review-action-confirmed" role="status">
+                      <StatusPill tone="success">Human Sign-off Complete</StatusPill>
+                      <p>
+                        <strong>{reviewedAction}:</strong> Pharmacy Operations Lead verified graph evidence path. Internal escalation advisories logged for <em>Example Acute Care Unit</em> and <em>Example Procedure Suite</em> (Synthetic Demonstration Record).
+                      </p>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
