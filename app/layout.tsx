@@ -1,23 +1,31 @@
 import type { Metadata } from "next";
-import { Inter, JetBrains_Mono } from "next/font/google";
+import { Newsreader, IBM_Plex_Sans, IBM_Plex_Mono } from "next/font/google";
 import "@/app/globals.css";
 
-const inter = Inter({
+const newsreader = Newsreader({
   subsets: ["latin"],
-  weight: ["400", "500", "600", "700", "800"],
-  variable: "--font-inter",
+  weight: ["400", "500"],
+  style: ["normal", "italic"],
+  variable: "--font-display",
   display: "swap",
 });
 
-const jetbrainsMono = JetBrains_Mono({
+const plexSans = IBM_Plex_Sans({
   subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
+  weight: ["400", "500", "600"],
+  variable: "--font-sans",
+  display: "swap",
+});
+
+const plexMono = IBM_Plex_Mono({
+  subsets: ["latin"],
+  weight: ["400", "500"],
   variable: "--font-mono",
   display: "swap",
 });
 
 export const metadata: Metadata = {
-  title: "ShortageBridge — Drug-Shortage Impact via FalkorDB",
+  title: "ShortageBridge",
   description:
     "A graph-backed operational prototype connecting public FDA shortage records to synthetic hospital evidence via FalkorDB.",
 };
@@ -28,7 +36,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${inter.variable} ${jetbrainsMono.variable}`}
+      className={`${newsreader.variable} ${plexSans.variable} ${plexMono.variable}`}
     >
       <body>{children}</body>
     </html>

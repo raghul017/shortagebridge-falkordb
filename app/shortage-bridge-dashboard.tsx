@@ -71,15 +71,12 @@ function nodeText(node: PathNode | undefined, property: string) {
   return typeof value === "string" ? value : undefined;
 }
 
-type IconName = "alert" | "question" | "graph" | "hospital" | "clipboard" | "external" | "shield";
+type IconName = "mark" | "external" | "shield";
 
 function Icon({ name }: { name: IconName }) {
   const paths: Record<IconName, React.ReactNode> = {
-    alert: <><path d="M12 3 2.5 20h19L12 3Z" /><path d="M12 10v4M12 17.2v.1" /></>,
-    question: <><circle cx="12" cy="12" r="9" /><path d="M9.5 9.5a2.5 2.5 0 1 1 3.4 2.3c-.6.3-.9.8-.9 1.4v.6M12 17v.1" /></>,
-    graph: <><circle cx="5" cy="6" r="2.2" /><circle cx="19" cy="6" r="2.2" /><circle cx="12" cy="18" r="2.2" /><path d="M7.2 6h9.6M6.2 8l4.7 8M17.8 8l-4.7 8" /></>,
-    hospital: <><path d="M4 21V5h16v16M2 21h20" /><path d="M12 8v6M9 11h6M10 21v-3h4v3" /></>,
-    clipboard: <><rect x="5" y="4" width="14" height="17" rx="2" /><path d="M9 4h6v3H9zM8.5 13l2.5 2.5 4.5-5" /></>,
+    // Two nodes joined by an edge: the project's one visual mark.
+    mark: <><circle cx="5.5" cy="17" r="3" /><circle cx="18.5" cy="7" r="3" /><path d="M8 15.5 16 8.5" /></>,
     external: <><path d="M14 4h6v6M20 4l-9 9" /><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" /></>,
     shield: <><path d="M12 3 4 6v6c0 4.5 3.4 8.2 8 9 4.6-.8 8-4.5 8-9V6l-8-3Z" /><path d="m9 12 2 2 4-4" /></>,
   };
@@ -94,14 +91,14 @@ function Tag({ tone, children }: { tone: "public" | "synthetic" | "bridge" | "ne
   return <span className={`tag tag-${tone}`}>{children}</span>;
 }
 
-function StoryHeading({ step, icon, kicker, title, tag }: {
-  step: number; icon: IconName; kicker: string; title: string; tag?: React.ReactNode;
+function StoryHeading({ step, kicker, title, tag }: {
+  step: number; kicker: string; title: string; tag?: React.ReactNode;
 }) {
   return (
     <div className="story-heading">
-      <span className="story-step" aria-hidden="true"><Icon name={icon} /></span>
+      <span className="story-step" aria-hidden="true">{String(step).padStart(2, "0")}</span>
       <div className="story-heading-text">
-        <p className="kicker">Step {step} · {kicker}</p>
+        <p className="kicker">{kicker}</p>
         <h2>{title}</h2>
       </div>
       {tag}
@@ -240,7 +237,7 @@ export default function ShortageBridgeDashboard() {
     <main className="page">
       <header className="topbar">
         <div className="brand">
-          <span className="brand-mark" aria-hidden="true"><Icon name="graph" /></span>
+          <span className="brand-mark" aria-hidden="true"><Icon name="mark" /></span>
           <div>
             <strong>ShortageBridge</strong>
             <span>Drug-shortage impact, traced through FalkorDB</span>
@@ -290,7 +287,7 @@ export default function ShortageBridgeDashboard() {
         <div className="story">
           {/* 1 — PUBLIC FDA ALERT */}
           <section className="panel panel-public" aria-labelledby="alert-heading">
-            <StoryHeading step={1} icon="alert" kicker="The public alert" title="An FDA drug shortage record" tag={<Tag tone="public">Public FDA data</Tag>} />
+            <StoryHeading step={1} kicker="The public alert" title="An FDA drug shortage record" tag={<Tag tone="public">Public FDA data</Tag>} />
             <div className="alert-grid">
               <div className="alert-main">
                 <h3 id="alert-heading" className="drug-name">{data.shortage.genericName}</h3>
@@ -319,7 +316,7 @@ export default function ShortageBridgeDashboard() {
 
           {/* 2 — THE QUESTION */}
           <section className="panel question-panel" aria-labelledby="question-heading">
-            <StoryHeading step={2} icon="question" kicker="The question" title="The pharmacy lead asks one thing" />
+            <StoryHeading step={2} kicker="The question" title="The pharmacy lead asks one thing" />
             <div className="question-row">
               <p id="question-heading" className="big-question">“{MAIN_QUESTION}”</p>
               <button type="button" className="button button-primary button-large" onClick={() => void askQuestion()} disabled={tracing}>
@@ -340,7 +337,7 @@ export default function ShortageBridgeDashboard() {
             <>
               {/* 3 — FALKORDB EVIDENCE PATH */}
               <section ref={graphSection} className="panel panel-graph" aria-labelledby="graph-heading">
-                <StoryHeading step={3} icon="graph" kicker="The evidence path" title="How FalkorDB connects the alert to the hospital" />
+                <StoryHeading step={3} kicker="The evidence path" title="How FalkorDB connects the alert to the hospital" />
                 <p id="graph-heading" className="graph-stats">
                   <span><strong>{nodeCount}</strong> nodes</span>
                   <span><strong>{edgeCount}</strong> relationships</span>
@@ -359,7 +356,7 @@ export default function ShortageBridgeDashboard() {
               {/* 4 — SYNTHETIC HOSPITAL IMPACT */}
               <section className="panel panel-synthetic" aria-labelledby="impact-heading">
                 <div className="synthetic-band">Synthetic demo data · fictional hospital · not real stock</div>
-                <StoryHeading step={4} icon="hospital" kicker="The impact (synthetic)" title="What it would affect at the demo hospital" tag={<Tag tone="synthetic">Synthetic demo data</Tag>} />
+                <StoryHeading step={4} kicker="The impact (synthetic)" title="What it would affect at the demo hospital" tag={<Tag tone="synthetic">Synthetic demo data</Tag>} />
                 <div className="impact-grid">
                   <div className="runway">
                     <p className="kicker">Illustrative stock runway</p>
@@ -396,7 +393,7 @@ export default function ShortageBridgeDashboard() {
 
               {/* 5 — HUMAN REVIEW BRIEF */}
               <section className="panel panel-brief" aria-labelledby="brief-heading">
-                <StoryHeading step={5} icon="clipboard" kicker="The human review" title="A brief for the person who decides" tag={<Tag tone="neutral">Explains only, never acts</Tag>} />
+                <StoryHeading step={5} kicker="The human review" title="A brief for the person who decides" tag={<Tag tone="neutral">Explains only, never acts</Tag>} />
                 <div className="brief-layout">
                   <div className="brief-main">
                     <label className="field-label" htmlFor="brief-question">Question for the review brief</label>
@@ -502,7 +499,7 @@ export default function ShortageBridgeDashboard() {
           {actionState === "saved" && savedAction && (
             <section className="panel panel-action" aria-labelledby="action-heading" aria-live="polite">
               <div className="synthetic-band">Synthetic demo record · human-triggered · not a clinical decision</div>
-              <StoryHeading step={6} icon="clipboard" kicker="The review record" title="Demo review action saved in FalkorDB" tag={<Tag tone="success">Written to the graph</Tag>} />
+              <StoryHeading step={6} kicker="The review record" title="Demo review action saved in FalkorDB" tag={<Tag tone="success">Written to the graph</Tag>} />
               <p className="action-intro">
                 A person confirmed the review, so the server wrote one <code>ReviewAction</code> node back into the same graph and linked it to the evidence it was based on. The traversal is now a closed loop: public alert → synthetic impact → human decision.
               </p>
