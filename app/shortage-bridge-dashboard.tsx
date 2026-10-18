@@ -1,10 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import EvidenceGraph, { HOPS, type GraphPath, type PathNode } from "@/app/evidence-graph";
+import { IMPACT_QUERY } from "@/lib/impact-query";
 
 type HealthResponse = { ok: boolean; graphConnected: boolean; error?: string };
-type PathNode = { labels: string[]; properties: Record<string, unknown> };
-type GraphPath = { nodes?: PathNode[] };
 
 type Impact = {
   graphPaths: { shortageToInventory: GraphPath; facilityToReview: GraphPath };
@@ -32,6 +32,16 @@ type ImpactResponse = {
   impacts: Impact[];
 };
 
+type SavedReviewActionResponse = {
+  actionId: string;
+  status: string;
+  reviewedAt: string;
+  syntheticLabel: string;
+  linkedTo: { shortageRecordId: string; facilityProductId: string };
+  citedEvidenceIds: string[];
+  notice: string;
+};
+
 type EvidenceBriefResponse = {
   summary: string;
   servicesToReview: string[];
@@ -41,6 +51,9 @@ type EvidenceBriefResponse = {
   fallbackReason?: string;
 };
 
+const MAIN_QUESTION = "What does this affect?";
+const DEFAULT_BRIEF_QUESTION = "What does this graph show and which synthetic services should a human review?";
+
 function formatTimestamp(value: string) {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
@@ -49,7 +62,7 @@ function formatTimestamp(value: string) {
   }).format(parsed)} IST`;
 }
 
-function pathNode(path: GraphPath, label: string) {
+function pathNode(path: GraphPath, label: string): PathNode | undefined {
   return path.nodes?.find((node) => node.labels.includes(label));
 }
 
@@ -58,39 +71,41 @@ function nodeText(node: PathNode | undefined, property: string) {
   return typeof value === "string" ? value : undefined;
 }
 
-function StatusPill({ tone, children }: { tone: "public" | "synthetic" | "neutral" | "success"; children: React.ReactNode }) {
-  return <span className={`pill pill-${tone}`}>{children}</span>;
-}
+type IconName = "alert" | "question" | "graph" | "hospital" | "clipboard" | "external" | "shield";
 
-function EvidenceStep({
-  number, kind, title, detail, children,
-}: {
-  number: number;
-  kind: "Public FDA fact" | "Reviewed mapping" | "Synthetic demo data";
-  title: string;
-  detail: string;
-  children?: React.ReactNode;
-}) {
-  const tone = kind === "Public FDA fact" ? "public" : kind === "Synthetic demo data" ? "synthetic" : "neutral";
+function Icon({ name }: { name: IconName }) {
+  const paths: Record<IconName, React.ReactNode> = {
+    alert: <><path d="M12 3 2.5 20h19L12 3Z" /><path d="M12 10v4M12 17.2v.1" /></>,
+    question: <><circle cx="12" cy="12" r="9" /><path d="M9.5 9.5a2.5 2.5 0 1 1 3.4 2.3c-.6.3-.9.8-.9 1.4v.6M12 17v.1" /></>,
+    graph: <><circle cx="5" cy="6" r="2.2" /><circle cx="19" cy="6" r="2.2" /><circle cx="12" cy="18" r="2.2" /><path d="M7.2 6h9.6M6.2 8l4.7 8M17.8 8l-4.7 8" /></>,
+    hospital: <><path d="M4 21V5h16v16M2 21h20" /><path d="M12 8v6M9 11h6M10 21v-3h4v3" /></>,
+    clipboard: <><rect x="5" y="4" width="14" height="17" rx="2" /><path d="M9 4h6v3H9zM8.5 13l2.5 2.5 4.5-5" /></>,
+    external: <><path d="M14 4h6v6M20 4l-9 9" /><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" /></>,
+    shield: <><path d="M12 3 4 6v6c0 4.5 3.4 8.2 8 9 4.6-.8 8-4.5 8-9V6l-8-3Z" /><path d="m9 12 2 2 4-4" /></>,
+  };
   return (
-    <li className="evidence-step">
-      <div className="step-number" aria-hidden="true">{number}</div>
-      <div className="step-content">
-        <StatusPill tone={tone}>{kind}</StatusPill>
-        <h3>{title}</h3>
-        <p>{detail}</p>
-        {children}
-      </div>
-    </li>
+    <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {paths[name]}
+    </svg>
   );
 }
 
-function LoadingState() {
+function Tag({ tone, children }: { tone: "public" | "synthetic" | "bridge" | "neutral" | "success"; children: React.ReactNode }) {
+  return <span className={`tag tag-${tone}`}>{children}</span>;
+}
+
+function StoryHeading({ step, icon, kicker, title, tag }: {
+  step: number; icon: IconName; kicker: string; title: string; tag?: React.ReactNode;
+}) {
   return (
-    <section className="loading-card" aria-live="polite" aria-busy="true">
-      <div className="loading-mark" aria-hidden="true" />
-      <div><h2>Tracing the connected evidence</h2><p>Loading the fixed FalkorDB impact path for the selected demo record…</p></div>
-    </section>
+    <div className="story-heading">
+      <span className="story-step" aria-hidden="true"><Icon name={icon} /></span>
+      <div className="story-heading-text">
+        <p className="kicker">Step {step} · {kicker}</p>
+        <h2>{title}</h2>
+      </div>
+      {tag}
+    </div>
   );
 }
 
@@ -99,45 +114,77 @@ export default function ShortageBridgeDashboard() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "unavailable" | "error">("loading");
   const [message, setMessage] = useState("");
-  const [question, setQuestion] = useState("What does this graph show and which synthetic services should a human review?");
+  const [asked, setAsked] = useState(false);
+  const [tracing, setTracing] = useState(false);
+  const [queryMs, setQueryMs] = useState<number | null>(null);
+  const [step, setStep] = useState(0);
+  const [question, setQuestion] = useState(DEFAULT_BRIEF_QUESTION);
   const [brief, setBrief] = useState<EvidenceBriefResponse | null>(null);
   const [briefState, setBriefState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [briefError, setBriefError] = useState("");
-  const [reviewedAction, setReviewedAction] = useState<string | null>(null);
+  const [savedAction, setSavedAction] = useState<SavedReviewActionResponse | null>(null);
+  const [actionState, setActionState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [actionError, setActionError] = useState("");
+  const graphSection = useRef<HTMLElement>(null);
+
+  const fetchImpact = useCallback(async () => {
+    const started = performance.now();
+    const response = await fetch("/api/impact", { cache: "no-store" });
+    const elapsed = Math.round(performance.now() - started);
+    if (!response.ok) {
+      const errorBody = await response.json() as { error?: string };
+      throw Object.assign(new Error(errorBody.error ?? "Impact analysis is unavailable right now."), { unavailable: true });
+    }
+    return { body: await response.json() as ImpactResponse, elapsed };
+  }, []);
 
   const loadAnalysis = useCallback(async () => {
     setState("loading");
     setMessage("");
     try {
-      const [healthResponse, impactResponse] = await Promise.all([
-        fetch("/api/health", { cache: "no-store" }),
-        fetch("/api/impact", { cache: "no-store" }),
-      ]);
-      const healthBody = await healthResponse.json() as HealthResponse;
-      setHealth(healthBody);
-      if (!impactResponse.ok) {
-        const errorBody = await impactResponse.json() as { error?: string };
-        setState("unavailable");
-        setMessage(errorBody.error ?? "Impact analysis is unavailable right now.");
-        return;
-      }
-      setData(await impactResponse.json() as ImpactResponse);
+      const healthResponse = await fetch("/api/health", { cache: "no-store" });
+      setHealth(await healthResponse.json() as HealthResponse);
+      const { body } = await fetchImpact();
+      setData(body);
       setState("ready");
-    } catch {
-      setHealth(null);
-      setState("error");
-      setMessage("The app could not reach its server. Check the local app and FalkorDB services, then try again.");
+    } catch (error) {
+      const unavailable = typeof error === "object" && error !== null && "unavailable" in error;
+      setState(unavailable ? "unavailable" : "error");
+      setMessage(unavailable && error instanceof Error
+        ? error.message
+        : "The app could not reach its server. Check the local app and FalkorDB services, then try again.");
     }
-  }, []);
+  }, [fetchImpact]);
 
   useEffect(() => {
     const initialRequest = window.setTimeout(() => { void loadAnalysis(); }, 0);
     return () => window.clearTimeout(initialRequest);
   }, [loadAnalysis]);
 
+  // Asking the question re-runs the FalkorDB traversal and starts the walkthrough at the public record.
+  const askQuestion = useCallback(async () => {
+    setTracing(true);
+    try {
+      const { body, elapsed } = await fetchImpact();
+      setData(body);
+      setQueryMs(elapsed);
+      setStep(0);
+      setAsked(true);
+      window.setTimeout(() => graphSection.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+    } catch (error) {
+      setState("unavailable");
+      setMessage(error instanceof Error ? error.message : "Impact analysis is unavailable right now.");
+    } finally {
+      setTracing(false);
+    }
+  }, [fetchImpact]);
+
   const generateBrief = useCallback(async () => {
     setBriefState("loading");
     setBriefError("");
+    setSavedAction(null);
+    setActionState("idle");
+    setActionError("");
     try {
       const response = await fetch("/api/brief", {
         method: "POST",
@@ -156,299 +203,343 @@ export default function ShortageBridgeDashboard() {
     }
   }, [question]);
 
+  // Writes a synthetic ReviewAction node in FalkorDB. The browser sends only a confirmation flag.
+  const saveReviewAction = useCallback(async () => {
+    setActionState("saving");
+    setActionError("");
+    try {
+      const response = await fetch("/api/review-action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmed: true }),
+      });
+      if (!response.ok) {
+        const errorBody = await response.json() as { error?: string };
+        throw new Error(errorBody.error ?? "The demo review action could not be saved.");
+      }
+      setSavedAction(await response.json() as SavedReviewActionResponse);
+      setActionState("saved");
+    } catch (error) {
+      setActionState("error");
+      setActionError(error instanceof Error ? error.message : "The demo review action could not be saved.");
+    }
+  }, []);
+
   const primaryImpact = data?.impacts[0];
-  const presentation = primaryImpact ? nodeText(pathNode(primaryImpact.graphPaths.shortageToInventory, "DrugPresentation"), "name") : undefined;
+  const shortageNode = primaryImpact ? pathNode(primaryImpact.graphPaths.shortageToInventory, "ShortageRecord") : undefined;
+  const presentation = nodeText(shortageNode, "presentation");
+  const initialPosting = nodeText(shortageNode, "initial_posting_date");
+  const allPaths = data?.impacts.flatMap((impact) => [impact.graphPaths.shortageToInventory, impact.graphPaths.facilityToReview]) ?? [];
+  const nodeCount = new Set(allPaths.flatMap((path) => path.nodes?.map((node) => node.id) ?? [])).size;
+  const edgeCount = new Set(allPaths.flatMap((path) => path.edges?.map((edge) => edge.id) ?? [])).size;
+  const runway = primaryImpact?.syntheticInventory;
+  const runwayDays = runway ? Math.max(0, Math.ceil(runway.estimatedRunwayDays)) : 0;
+  const role = primaryImpact?.syntheticReview.role.name;
 
   return (
-    <main className="app-shell">
-      <header className="hero">
-        <div className="hero-copy">
-          <div className="eyebrow"><span className="bridge-mark" aria-hidden="true">⌁</span> ShortageBridge</div>
-          <h1>Trace shortage context.<br /><em>Keep the human in review.</em></h1>
-          <p className="hero-summary">A graph-backed operational prototype that connects a public shortage record to clearly labeled, synthetic demo hospital evidence via FalkorDB.</p>
+    <main className="page">
+      <header className="topbar">
+        <div className="brand">
+          <span className="brand-mark" aria-hidden="true"><Icon name="graph" /></span>
+          <div>
+            <strong>ShortageBridge</strong>
+            <span>Drug-shortage impact, traced through FalkorDB</span>
+          </div>
         </div>
-        <aside className="safety-note" aria-label="Prototype safety boundary">
-          <StatusPill tone="neutral">Human review required</StatusPill>
-          <p>Not clinical advice, a substitute recommendation, a live-stock feed, or an automated ordering system.</p>
-        </aside>
+        <div className="topbar-right">
+          <span className="track-chip">Graph Hacks · Track 01</span>
+          <span className={`status ${health?.ok ? "status-ok" : state === "loading" ? "" : "status-bad"}`} aria-live="polite">
+            <span className="status-dot" aria-hidden="true" />
+            {health?.ok ? "FalkorDB connected" : state === "loading" ? "Checking FalkorDB…" : "FalkorDB unavailable"}
+          </span>
+        </div>
       </header>
 
-      <section className="control-bar" aria-label="Impact analysis controls">
-        <div>
-          <p className="section-kicker">Selected demo case</p>
-          <strong>{data?.shortage.genericName ?? "Loading public shortage record…"}</strong>
-          {data && <span className="case-id">{data.caseId}</span>}
-        </div>
-        <div className="control-actions">
-          <span className={`connection ${health?.ok ? "connection-ok" : ""}`} aria-live="polite">
-            <span className="connection-dot" aria-hidden="true" />
-            {health?.ok ? "FalkorDB connected" : state === "loading" ? "Checking graph…" : "Graph unavailable"}
-          </span>
-          <button type="button" className="refresh-button" onClick={() => void loadAnalysis()} disabled={state === "loading"}>
-            {state === "loading" ? "Loading analysis…" : "Refresh analysis"}
-          </button>
-        </div>
-      </section>
+      <div className="safety-ribbon" role="note">
+        <Icon name="shield" />
+        <p>
+          <strong>Prototype for human review.</strong> Not medical advice. No medication substitution. No real hospital stock.
+          Hospital details are <span className="inline-synthetic">synthetic demo data</span>.
+        </p>
+      </div>
 
-      {state === "loading" && <LoadingState />}
+      <div className="legend" aria-label="Data origin legend">
+        <span><i className="swatch swatch-public" /> Public FDA data</span>
+        <span><i className="swatch swatch-bridge" /> Reviewed mapping</span>
+        <span><i className="swatch swatch-synthetic" /> Synthetic demo data</span>
+      </div>
 
-      {(state === "unavailable" || state === "error") && (
-        <section className="unavailable-card" role="alert">
-          <StatusPill tone="neutral">Analysis unavailable</StatusPill>
-          <h2>We could not load the graph-backed impact path.</h2>
-          <p>{message}</p>
-          <button type="button" className="retry-button" onClick={() => void loadAnalysis()}>Try again</button>
+      {state === "loading" && (
+        <section className="panel loading" aria-live="polite" aria-busy="true">
+          <div className="spinner" aria-hidden="true" />
+          <div><h2>Loading the public shortage record</h2><p>Querying FalkorDB for the demo case…</p></div>
         </section>
       )}
 
-      {state === "ready" && data && primaryImpact && (
-        <div className="dashboard-grid">
-          {/* STEP 1: PUBLIC FDA SHORTAGE RECORD */}
-          <section className="record-card surface-card public-boundary-card" aria-labelledby="record-heading">
-            <div className="card-heading">
-              <div>
-                <p className="section-kicker">Step 1 · Public FDA Shortage Record</p>
-                <h2 id="record-heading">{data.shortage.genericName}</h2>
+      {(state === "unavailable" || state === "error") && (
+        <section className="panel unavailable" role="alert">
+          <Tag tone="neutral">Analysis unavailable</Tag>
+          <h2>We could not load the graph-backed impact path.</h2>
+          <p>{message}</p>
+          <p className="muted">Start FalkorDB with <code>docker compose up -d falkordb</code>, seed it with <code>npm run seed</code>, then try again.</p>
+          <button type="button" className="button button-primary" onClick={() => void loadAnalysis()}>Try again</button>
+        </section>
+      )}
+
+      {state === "ready" && data && primaryImpact && runway && (
+        <div className="story">
+          {/* 1 — PUBLIC FDA ALERT */}
+          <section className="panel panel-public" aria-labelledby="alert-heading">
+            <StoryHeading step={1} icon="alert" kicker="The public alert" title="An FDA drug shortage record" tag={<Tag tone="public">Public FDA data</Tag>} />
+            <div className="alert-grid">
+              <div className="alert-main">
+                <h3 id="alert-heading" className="drug-name">{data.shortage.genericName}</h3>
+                {presentation && <p className="drug-presentation">{presentation}</p>}
+                <dl className="facts">
+                  <div><dt>FDA status</dt><dd>{data.shortage.status}</dd></div>
+                  <div><dt>Availability field</dt><dd>{data.shortage.availability}</dd></div>
+                  <div><dt>Record updated</dt><dd>{data.shortage.updateDate}</dd></div>
+                  <div><dt>Package NDC</dt><dd className="mono">{data.shortage.sourceRecordId}</dd></div>
+                  {initialPosting && <div><dt>First posted</dt><dd>{initialPosting}</dd></div>}
+                </dl>
+                <p className="source-line">
+                  <a href={data.provenance.publicEvidence.sourceUrl} target="_blank" rel="noreferrer">
+                    openFDA Drug Shortages API record <Icon name="external" />
+                  </a>
+                  <span>Snapshot retrieved {formatTimestamp(data.provenance.publicEvidence.retrievedAt)}</span>
+                </p>
               </div>
-              <StatusPill tone="public">openFDA public snapshot</StatusPill>
-            </div>
-            <dl className="record-facts">
-              <div><dt>FDA status</dt><dd>{data.shortage.status}</dd></div>
-              <div><dt>Availability field</dt><dd>{data.shortage.availability}</dd></div>
-              <div><dt>FDA record update</dt><dd>{data.shortage.updateDate}</dd></div>
-              <div><dt>Package NDC</dt><dd>{data.shortage.sourceRecordId}</dd></div>
-            </dl>
-            <div className="source-block">
-              <div>
-                <p className="section-kicker">Source & retrieval timestamp</p>
-                <p>Retrieved {formatTimestamp(data.provenance.publicEvidence.retrievedAt)}</p>
-              </div>
-              <a href={data.provenance.publicEvidence.sourceUrl} target="_blank" rel="noreferrer">
-                Open public openFDA source <span aria-hidden="true">↗</span>
-              </a>
+              <aside className="why-matters">
+                <h3>Why it matters</h3>
+                <p>The FDA list tells a hospital <em>what</em> is short nationally. It cannot tell them which of their own services use the drug, how long their stock lasts, or who should review it.</p>
+                <p className="muted">An FDA listing reflects manufacturer-reported status. It is not a stock feed for any hospital, pharmacy, or wholesaler.</p>
+              </aside>
             </div>
           </section>
 
-          <aside className="notice-card" aria-label="Important interpretation limit">
-            <StatusPill tone="neutral">Safety Boundary</StatusPill>
-            <p className="notice-title"><strong>Interpret carefully</strong></p>
-            <p>{data.notice}</p>
-          </aside>
-
-          {/* STEP 2: FALKORDB CONNECTED EVIDENCE PATH */}
-          <section className="path-card surface-card" aria-labelledby="path-heading">
-            <div className="card-heading">
-              <div>
-                <p className="section-kicker">Step 2 · FalkorDB Connected Evidence Path</p>
-                <h2 id="path-heading">Multi-Hop Traversal: Public Shortage to Hospital Escalation</h2>
-              </div>
-              <span className="path-count">Fixed parameterized Cypher query · {data.impacts.length} services returned</span>
-            </div>
-            <ol className="evidence-path">
-              <EvidenceStep
-                number={1}
-                kind="Public FDA fact"
-                title={`ShortageRecord: ${data.shortage.genericName}`}
-                detail={`Sourced from openFDA (package NDC ${data.shortage.sourceRecordId}). Status: ${data.shortage.status}; availability: ${data.shortage.availability}; updated ${data.shortage.updateDate}.`}
-              />
-              <EvidenceStep
-                number={2}
-                kind="Reviewed mapping"
-                title={`DrugPresentation: ${presentation ?? "Matched drug presentation"}`}
-                detail={primaryImpact.productMatch.rationale}
-              >
-                <p className="micro-copy">Relationship: <code>[:MATCHED_TO]</code> with status <strong>{primaryImpact.productMatch.status}</strong>. Explicit human review; does not assert local inventory availability.</p>
-              </EvidenceStep>
-              <EvidenceStep
-                number={3}
-                kind="Synthetic demo data"
-                title={`FacilityProduct: ${primaryImpact.syntheticFacilityItem.name}`}
-                detail="Fictional facility formulary item connected via [:HAS_ITEM] to Riverglen Demonstration Hospital."
-              />
-              <EvidenceStep
-                number={4}
-                kind="Synthetic demo data"
-                title="InventorySnapshot: Illustrative stock data"
-                detail={`Traversed via [:HAS_SNAPSHOT]. ${primaryImpact.syntheticInventory.onHandQuantity} synthetic units on hand; average daily consumption is ${primaryImpact.syntheticInventory.averageDailyUse} units per day.`}
-              />
-              <EvidenceStep
-                number={5}
-                kind="Synthetic demo data"
-                title={`ServiceLine & Escalation: ${data.impacts.length} connected hospital services`}
-                detail={`Traversed via [:USED_BY] to ${data.impacts.map((i) => i.syntheticService.name).join(" and ")}, following [:FOLLOWS] to ${primaryImpact.syntheticReview.protocol.name}, escalating via [:ESCALATE_TO] to ${primaryImpact.syntheticReview.role.name}.`}
-              />
-            </ol>
-          </section>
-
-          {/* STEP 3: SYNTHETIC HOSPITAL IMPACT & 4-DAY RUNWAY */}
-          <section className="runway-card" aria-labelledby="runway-heading">
-            <div>
-              <StatusPill tone="synthetic">Synthetic demo data</StatusPill>
-              <p className="section-kicker">Step 3A · Illustrative Stock Runway</p>
-              <h2 id="runway-heading">Estimated runway</h2>
-              <span className="runway-number">{primaryImpact.syntheticInventory.estimatedRunwayDays}<span className="runway-unit"> days</span></span>
-            </div>
-            <div className="formula-block">
-              <p>{primaryImpact.syntheticInventory.formula}</p>
-              <strong>
-                {primaryImpact.syntheticInventory.onHandQuantity} synthetic units ÷ {primaryImpact.syntheticInventory.averageDailyUse} synthetic units/day = {primaryImpact.syntheticInventory.estimatedRunwayDays} days
-              </strong>
-              <small>Snapshot timestamp: {primaryImpact.syntheticInventory.asOf}</small>
-            </div>
-            <p className="runway-limit">{primaryImpact.syntheticInventory.label}</p>
-          </section>
-
-          <section className="service-card surface-card synthetic-boundary-card" aria-labelledby="service-heading">
-            <div className="card-heading">
-              <div>
-                <p className="section-kicker">Step 3B · Connected Hospital Services</p>
-                <h2 id="service-heading">Synthetic Services Sharing This Formulary Item</h2>
-              </div>
-              <StatusPill tone="synthetic">Synthetic Hospital Graph</StatusPill>
-            </div>
-            <p className="service-intro">FalkorDB traversed the graph to identify which hospital service lines rely on this synthetic item and their established escalation protocols:</p>
-            <div className="service-grid">
-              {data.impacts.map((impact) => (
-                <article className="service-path" key={impact.syntheticService.id}>
-                  <StatusPill tone="synthetic">Synthetic service</StatusPill>
-                  <h3>{impact.syntheticService.name}</h3>
-                  <div className="review-link">
-                    <span className="review-link-icon" aria-hidden="true">↳</span>
-                    <p>Follows protocol: <strong>{impact.syntheticReview.protocol.name}</strong></p>
-                  </div>
-                  <div className="review-link">
-                    <span className="review-link-icon" aria-hidden="true">↳</span>
-                    <p>Escalates review to: <strong>{impact.syntheticReview.role.name}</strong></p>
-                  </div>
-                </article>
-              ))}
-            </div>
-          </section>
-
-          {/* STEP 4: HUMAN REVIEW BRIEF */}
-          <section className="brief-card surface-card" aria-labelledby="brief-heading">
-            <div className="card-heading">
-              <div>
-                <p className="section-kicker">Step 4 · Human Review Brief</p>
-                <h2 id="brief-heading">Constrained Evidence Explainer (Gemini & Fallback)</h2>
-              </div>
-              <StatusPill tone="neutral">Explanatory layer only</StatusPill>
-            </div>
-            <p className="brief-intro">
-              The server re-queries FalkorDB before each brief. Your question is analyzed with only the retrieved graph evidence—never credentials, patient records, or ungrounded assumptions.
-            </p>
-            <label className="question-label" htmlFor="brief-question">Question for the pharmacy operations review</label>
-            <textarea
-              id="brief-question"
-              className="question-box"
-              value={question}
-              onChange={(event) => setQuestion(event.target.value)}
-              maxLength={600}
-              rows={3}
-            />
-            <div className="brief-controls">
-              <span>{question.length}/600 characters</span>
-              <button
-                type="button"
-                className="brief-button"
-                onClick={() => void generateBrief()}
-                disabled={briefState === "loading" || question.trim().length < 3}
-              >
-                {briefState === "loading" ? "Generating evidence brief…" : "Generate review brief"}
+          {/* 2 — THE QUESTION */}
+          <section className="panel question-panel" aria-labelledby="question-heading">
+            <StoryHeading step={2} icon="question" kicker="The question" title="The pharmacy lead asks one thing" />
+            <div className="question-row">
+              <p id="question-heading" className="big-question">“{MAIN_QUESTION}”</p>
+              <button type="button" className="button button-primary button-large" onClick={() => void askQuestion()} disabled={tracing}>
+                {tracing ? "Traversing the graph…" : asked ? "Run the traversal again" : "Ask the graph"}
+                <span aria-hidden="true"> →</span>
               </button>
             </div>
-            {briefState === "error" && <p className="brief-error" role="alert">{briefError}</p>}
-            {briefState === "ready" && brief && (
-              <div className="brief-result" aria-live="polite">
-                <div className="brief-result-heading">
-                  <StatusPill tone={brief.mode === "gemini" ? "success" : "neutral"}>
-                    {brief.mode === "gemini" ? "✓ Gemini 3.8 Flash evidence brief" : "Deterministic fallback"}
-                  </StatusPill>
-                  {brief.fallbackReason && <span className="fallback-note">{brief.fallbackReason}</span>}
-                </div>
-                <p className="brief-summary">{brief.summary}</p>
-                <div className="brief-grid">
-                  <div>
-                    <h3>Services flagged for human review</h3>
-                    <ul>
-                      {brief.servicesToReview.map((service) => (
-                        <li key={service}>{service} <span className="tag-synthetic">synthetic</span></li>
-                      ))}
-                    </ul>
-                  </div>
-                  <div>
-                    <h3>Assumptions and boundaries</h3>
-                    <ul>
-                      {brief.assumptionsUnknowns.map((item) => (
-                        <li key={item}>{item}</li>
-                      ))}
-                    </ul>
-                  </div>
-                </div>
-                <div className="brief-evidence">
-                  <strong>Verified graph evidence IDs:</strong>
-                  {brief.evidenceIds.map((id) => (
-                    <code key={id}>{id}</code>
-                  ))}
-                </div>
+            <p className="muted question-note">
+              Clicking runs one fixed, parameterized Cypher query in FalkorDB. It follows six relationships from the public record to the synthetic demo hospital.
+            </p>
+          </section>
 
-                <div className="review-action-panel">
-                  {!reviewedAction ? (
-                    <div className="review-action-prompt">
-                      <div>
-                        <strong>Human Review Sign-off</strong>
-                        <p>Confirm that pharmacy operations has reviewed this graph evidence and logged escalation advisories.</p>
-                      </div>
+          {!asked && (
+            <p className="awaiting">The evidence path, synthetic impact and review brief appear here after you ask the question.</p>
+          )}
+
+          {asked && (
+            <>
+              {/* 3 — FALKORDB EVIDENCE PATH */}
+              <section ref={graphSection} className="panel panel-graph" aria-labelledby="graph-heading">
+                <StoryHeading step={3} icon="graph" kicker="The evidence path" title="How FalkorDB connects the alert to the hospital" />
+                <p id="graph-heading" className="graph-stats">
+                  <span><strong>{nodeCount}</strong> nodes</span>
+                  <span><strong>{edgeCount}</strong> relationships</span>
+                  <span><strong>{HOPS.length}</strong> hops</span>
+                  <span><strong>{data.impacts.length}</strong> result rows</span>
+                  {queryMs !== null && <span>answered in <strong>{queryMs} ms</strong> <small>(browser round trip)</small></span>}
+                </p>
+                <EvidenceGraph paths={allPaths} step={step} onStep={(next) => setStep(Math.max(0, Math.min(HOPS.length, next)))} />
+                <details className="cypher">
+                  <summary>Show the Cypher query FalkorDB runs</summary>
+                  <pre><code>{IMPACT_QUERY.trim()}</code></pre>
+                  <p className="muted">Only <code>$caseId</code> is a parameter. The query text never includes browser input, and it runs as read-only (<code>roQuery</code>).</p>
+                </details>
+              </section>
+
+              {/* 4 — SYNTHETIC HOSPITAL IMPACT */}
+              <section className="panel panel-synthetic" aria-labelledby="impact-heading">
+                <div className="synthetic-band">Synthetic demo data · fictional hospital · not real stock</div>
+                <StoryHeading step={4} icon="hospital" kicker="The impact (synthetic)" title="What it would affect at the demo hospital" tag={<Tag tone="synthetic">Synthetic demo data</Tag>} />
+                <div className="impact-grid">
+                  <div className="runway">
+                    <p className="kicker">Illustrative stock runway</p>
+                    <p className="runway-value" id="impact-heading">
+                      {runway.estimatedRunwayDays}<span> days</span>
+                    </p>
+                    <div className="runway-strip" aria-hidden="true">
+                      {Array.from({ length: Math.max(runwayDays, 1) + 2 }, (_, index) => (
+                        <span key={index} className={index < runwayDays ? "day day-covered" : "day day-empty"}>Day {index + 1}</span>
+                      ))}
+                    </div>
+                    <p className="runway-formula">
+                      <span className="mono">{runway.onHandQuantity}</span> units on hand ÷ <span className="mono">{runway.averageDailyUse}</span> units used per day = <strong>{runway.estimatedRunwayDays} days</strong>
+                    </p>
+                    <p className="muted small">Calculated inside the Cypher query from the synthetic snapshot dated {runway.asOf.slice(0, 10)}. {runway.label}</p>
+                  </div>
+                  <div className="services">
+                    <p className="kicker">Affected services ({data.impacts.length})</p>
+                    <ul className="service-list">
+                      {data.impacts.map((impact) => (
+                        <li key={impact.syntheticService.id} className="service">
+                          <div className="service-name">
+                            <strong>{impact.syntheticService.name}</strong>
+                            <Tag tone="synthetic">Synthetic</Tag>
+                          </div>
+                          <p><span className="rel">FOLLOWS</span> {impact.syntheticReview.protocol.name}</p>
+                          <p><span className="rel">ESCALATE_TO</span> {impact.syntheticReview.role.name}</p>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              </section>
+
+              {/* 5 — HUMAN REVIEW BRIEF */}
+              <section className="panel panel-brief" aria-labelledby="brief-heading">
+                <StoryHeading step={5} icon="clipboard" kicker="The human review" title="A brief for the person who decides" tag={<Tag tone="neutral">Explains only, never acts</Tag>} />
+                <div className="brief-layout">
+                  <div className="brief-main">
+                    <label className="field-label" htmlFor="brief-question">Question for the review brief</label>
+                    <textarea
+                      id="brief-question"
+                      className="question-box"
+                      value={question}
+                      onChange={(event) => setQuestion(event.target.value)}
+                      maxLength={600}
+                      rows={2}
+                    />
+                    <div className="brief-controls">
+                      <span className="muted small">{question.length}/600 · the server re-queries FalkorDB before writing the brief</span>
                       <button
                         type="button"
-                        className="approve-action-button"
-                        onClick={() =>
-                          setReviewedAction(
-                            `Signed off at ${new Date().toLocaleTimeString("en-US", {
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })} IST`,
-                          )
-                        }
+                        className="button button-primary"
+                        onClick={() => void generateBrief()}
+                        disabled={briefState === "loading" || question.trim().length < 3}
                       >
-                        Sign Off on Operational Review ✓
+                        {briefState === "loading" ? "Writing brief…" : brief ? "Regenerate brief" : "Generate review brief"}
                       </button>
                     </div>
-                  ) : (
-                    <div className="review-action-confirmed" role="status">
-                      <StatusPill tone="success">Human Sign-off Complete</StatusPill>
-                      <p>
-                        <strong>{reviewedAction}:</strong> Pharmacy Operations Lead verified graph evidence path. Internal escalation advisories logged for <em>Example Acute Care Unit</em> and <em>Example Procedure Suite</em> (Synthetic Demonstration Record).
-                      </p>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-          </section>
 
-          {/* PROVENANCE AND UNCERTAINTY FOOTER */}
-          <section className="provenance-card" aria-labelledby="provenance-heading">
-            <p className="section-kicker">Provenance and Safety Boundaries</p>
-            <h2 id="provenance-heading">Data Origin Transparency</h2>
-            <div className="provenance-grid">
-              <div>
-                <StatusPill tone="public">Public Source</StatusPill>
-                <p><strong>{data.provenance.publicEvidence.id}</strong></p>
-                <p>openFDA Drug Shortages snapshot retrieved at {formatTimestamp(data.provenance.publicEvidence.retrievedAt)}. Public listings track FDA manufacturer status, not local inventory stock.</p>
-              </div>
-              <div>
-                <StatusPill tone="synthetic">Synthetic Hospital Context</StatusPill>
-                <p><strong>{data.provenance.syntheticEvidence.id}</strong></p>
-                <p>{data.provenance.syntheticEvidence.label}</p>
-              </div>
-              <div>
-                <StatusPill tone="neutral">Reviewed Mapping</StatusPill>
-                <p><strong>Explicit Demonstration Match</strong></p>
-                <p>{primaryImpact.productMatch.rationale}</p>
-              </div>
+                    {briefState === "error" && <p className="brief-error" role="alert">{briefError}</p>}
+
+                    {briefState === "ready" && brief && (
+                      <article className="brief" aria-live="polite">
+                        <header className="brief-header">
+                          <Tag tone={brief.mode === "gemini" ? "success" : "neutral"}>
+                            {brief.mode === "gemini" ? "Written by Gemini 3.8 Flash from graph facts" : "Deterministic fallback (no AI)"}
+                          </Tag>
+                          {brief.fallbackReason && <span className="muted small">{brief.fallbackReason}</span>}
+                        </header>
+                        <p className="brief-summary">{brief.summary}</p>
+                        <div className="brief-columns">
+                          <div>
+                            <h3>Services to review</h3>
+                            <ul>
+                              {brief.servicesToReview.map((service) => (
+                                <li key={service}>{service} <Tag tone="synthetic">Synthetic</Tag></li>
+                              ))}
+                            </ul>
+                          </div>
+                          <div>
+                            <h3>Assumptions and unknowns</h3>
+                            <ul>
+                              {brief.assumptionsUnknowns.map((item) => <li key={item}>{item}</li>)}
+                            </ul>
+                          </div>
+                        </div>
+                        <p className="evidence-ids">
+                          <span>Cites graph evidence:</span>
+                          {brief.evidenceIds.map((id) => <code key={id}>{id}</code>)}
+                        </p>
+
+                        {actionState !== "saved" && (
+                          <div className="review-action">
+                            <div>
+                              <strong>Human review step</strong>
+                              <p>{role ? `The ${role}` : "The reviewer"} reads the evidence and marks the operational review complete. This writes a synthetic record to FalkorDB. Nothing is ordered, prescribed, or sent.</p>
+                            </div>
+                            <button
+                              type="button"
+                              className="button button-success"
+                              onClick={() => void saveReviewAction()}
+                              disabled={actionState === "saving"}
+                            >
+                              {actionState === "saving" ? "Saving to FalkorDB…" : "Mark review complete"}
+                            </button>
+                          </div>
+                        )}
+                        {actionState === "error" && (
+                          <p className="brief-error" role="alert">
+                            {actionError} <button type="button" className="link-button" onClick={() => void saveReviewAction()}>Try again</button>
+                          </p>
+                        )}
+                      </article>
+                    )}
+                  </div>
+
+                  <aside className="limits">
+                    <h3>What this brief will not do</h3>
+                    <ul>
+                      <li>Give medical advice or make clinical decisions</li>
+                      <li>Recommend a substitute medication</li>
+                      <li>Claim to know real hospital stock</li>
+                      <li>Place orders or change any data</li>
+                    </ul>
+                    <h3>How Gemini is constrained</h3>
+                    <ul>
+                      <li>It never connects to FalkorDB or writes Cypher</li>
+                      <li>It only sees facts the server just read from the graph</li>
+                      <li>It may only name services and evidence IDs FalkorDB returned</li>
+                      <li>If it is unavailable or breaks a rule, a deterministic brief is used instead</li>
+                    </ul>
+                  </aside>
+                </div>
+              </section>
+            </>
+          )}
+
+          {/* 6 — THE GRAPH WRITE */}
+          {actionState === "saved" && savedAction && (
+            <section className="panel panel-action" aria-labelledby="action-heading" aria-live="polite">
+              <div className="synthetic-band">Synthetic demo record · human-triggered · not a clinical decision</div>
+              <StoryHeading step={6} icon="clipboard" kicker="The review record" title="Demo review action saved in FalkorDB" tag={<Tag tone="success">Written to the graph</Tag>} />
+              <p className="action-intro">
+                A person confirmed the review, so the server wrote one <code>ReviewAction</code> node back into the same graph and linked it to the evidence it was based on. The traversal is now a closed loop: public alert → synthetic impact → human decision.
+              </p>
+              <dl className="facts action-facts">
+                <div><dt>Action ID</dt><dd className="mono">{savedAction.actionId}</dd></div>
+                <div><dt>Status</dt><dd className="mono">{savedAction.status}</dd></div>
+                <div><dt>Saved at</dt><dd>{formatTimestamp(savedAction.reviewedAt)}</dd></div>
+              </dl>
+              <ul className="action-links">
+                <li><span className="rel">BASED_ON</span> <code>{savedAction.linkedTo.shortageRecordId}</code></li>
+                <li><span className="rel">BASED_ON</span> <code>{savedAction.linkedTo.facilityProductId}</code></li>
+                {savedAction.citedEvidenceIds.map((id) => (
+                  <li key={id}><span className="rel">CITES</span> <code>{id}</code></li>
+                ))}
+              </ul>
+              <p className="muted small">{savedAction.syntheticLabel}</p>
+            </section>
+          )}
+
+          {/* PROVENANCE */}
+          <footer className="provenance" aria-label="Provenance">
+            <div>
+              <Tag tone="public">Public source</Tag>
+              <p><code>{data.provenance.publicEvidence.id}</code></p>
+              <p>openFDA snapshot retrieved {formatTimestamp(data.provenance.publicEvidence.retrievedAt)}. Not for medical decisions.</p>
             </div>
-          </section>
+            <div>
+              <Tag tone="bridge">Reviewed mapping</Tag>
+              <p><code>MATCHED_TO · {primaryImpact.productMatch.status}</code></p>
+              <p>{primaryImpact.productMatch.rationale}</p>
+            </div>
+            <div>
+              <Tag tone="synthetic">Synthetic context</Tag>
+              <p><code>{data.provenance.syntheticEvidence.id}</code></p>
+              <p>{data.provenance.syntheticEvidence.label}</p>
+            </div>
+          </footer>
         </div>
       )}
     </main>

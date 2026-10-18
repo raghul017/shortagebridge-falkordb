@@ -1,7 +1,11 @@
 import { z } from "zod";
 import { DEMO_GRAPH } from "@/lib/constants";
 
-const emptyToUndefined = (val: unknown) => (typeof val === "string" && val.trim() === "" ? undefined : val);
+// A variable present but blank in .env.local (for example `FALKORDB_URL=`) must behave
+// as if it were absent, so the defaults below still apply and local startup works.
+const emptyToUndefined = (value: unknown) =>
+  typeof value === "string" && value.trim() === "" ? undefined : value;
+
 const optionalString = z.preprocess(emptyToUndefined, z.string().min(1).optional());
 const optionalUrl = z.preprocess(emptyToUndefined, z.string().url().optional());
 
