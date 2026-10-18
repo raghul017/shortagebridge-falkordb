@@ -1,3 +1,10 @@
+import { loadEnvConfig } from "@next/env";
+
+// This script runs outside Next.js, which would otherwise load these for us.
+// Without it the seed silently falls back to the local Docker defaults, even
+// when .env.local points at a hosted FalkorDB instance.
+loadEnvConfig(process.cwd());
+
 import { DEMO_CASE_ID, OPENFDA_RECORD_URL } from "../lib/constants";
 import { getGraph } from "../lib/falkordb";
 

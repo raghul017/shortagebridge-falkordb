@@ -26,7 +26,7 @@ Public shortage notices only list pharmaceutical manufacturer reports—they do 
 
 ### Prerequisites
 - **Node.js**: v20 or v22+
-- **Docker Desktop**: Installed and running on your computer.
+- **FalkorDB**: either **Docker Desktop** (for the local setup described in section 3) or a **hosted FalkorDB instance** (see [section 5](#5-deploying-with-a-hosted-falkordb-instance)). Sections 2–4 describe the local Docker route.
 
 ### Why Docker Desktop is required
 **FalkorDB** is a high-performance graph database built on top of the Redis module ecosystem. Installing FalkorDB directly on macOS or Windows would require compiling native binaries and managing local services.
@@ -54,7 +54,11 @@ Copy the example environment file:
 ```bash
 cp .env.example .env.local
 ```
-> **Note on GEMINI_API_KEY:** `.env.local` contains default connection settings for local FalkorDB (`127.0.0.1:6379`). Adding a `GEMINI_API_KEY` from Google AI Studio is optional. If left blank or if quota is reached, the app automatically uses its built-in deterministic fallback brief.
+> **Note:** `.env.example` contains default connection settings for local FalkorDB (`127.0.0.1:6379`). To use a hosted instance instead, set `FALKORDB_URL` as described in [section 5](#5-deploying-with-a-hosted-falkordb-instance).
+>
+> **Note on GEMINI_API_KEY:** adding a key from Google AI Studio is optional. If left blank or if quota is reached, the app automatically uses its built-in deterministic fallback brief.
+>
+> `.env.local` is gitignored and must never be committed.
 
 ### Step 3: Start the local FalkorDB graph database
 ```bash
@@ -120,7 +124,46 @@ docker compose exec falkordb redis-cli GRAPH.QUERY shortagebridge \
 
 ---
 
-## 5. How to stop the project safely
+## 5. Deploying with a hosted FalkorDB instance
+
+The same code runs locally or deployed. Only the connection settings change: instead of `FALKORDB_HOST`/`FALKORDB_PORT` pointing at local Docker, set `FALKORDB_URL` to a hosted FalkorDB instance.
+
+### Environment variables
+
+Set these in your hosting platform's environment settings (in Vercel: **Project → Settings → Environment Variables**). **Never commit real values**; `.env.local` and every other `.env*` file are gitignored, and only `.env.example` is tracked.
+
+| Variable | Required | Purpose |
+| :--- | :--- | :--- |
+| `FALKORDB_URL` | Yes (hosted) | Connection URL for the hosted instance, including host and port. Use the `falkors://` scheme if your instance requires TLS. |
+| `FALKORDB_USERNAME` | If your instance requires auth | Database username. May be supplied separately rather than embedded in the URL. |
+| `FALKORDB_PASSWORD` | If your instance requires auth | Database password. |
+| `FALKORDB_GRAPH` | Recommended | Graph name. Defaults to `shortagebridge`. |
+| `FALKORDB_TLS` | Optional | `true` or `false`. Defaults to `false`. |
+| `GEMINI_API_KEY` | Optional | Enables the Gemini review brief. If omitted, the deterministic fallback is used and the UI labels which mode ran. |
+
+`FALKORDB_HOST` and `FALKORDB_PORT` are the local-Docker alternative to `FALKORDB_URL`; they default to `127.0.0.1:6379` and can be left unset when `FALKORDB_URL` is provided. Blank values are treated as unset, so an empty optional variable will not break startup.
+
+### Seeding the hosted graph
+
+A deployment reads whatever is already in the hosted graph; it does not seed on boot. Seed once from your machine with `.env.local` pointing at the hosted instance:
+
+```bash
+npm run seed
+```
+
+`scripts/seed.ts` loads `.env.local` the same way Next.js does, so it targets whichever database those variables describe. Seeding uses `MERGE`, so it is safe to run again.
+
+Verify the deployment once it is live:
+
+```bash
+curl -s https://<your-deployment-url>/api/health     # {"ok":true,"graphConnected":true}
+```
+
+> **Note on `output: "standalone"`:** [`next.config.ts`](./next.config.ts) sets this for the Docker image. It is kept because the Docker setup depends on it.
+
+---
+
+## 6. How to stop the project safely
 
 When you are finished demonstrating or working:
 
@@ -136,7 +179,7 @@ The `-v` flag stands for **volumes**. Running `docker compose down -v` permanent
 
 ---
 
-## 6. Verifying the API endpoints
+## 7. Verifying the API endpoints
 
 You can verify all backend services directly using `curl` from a terminal:
 
@@ -177,7 +220,7 @@ curl -s -X POST http://localhost:3000/api/review-action \
 
 ---
 
-## 7. Inspecting the local FalkorDB graph in the terminal
+## 8. Inspecting the local FalkorDB graph in the terminal
 
 The standard FalkorDB Docker container operates as a Redis-protocol database service on port 6379 (it does not run an HTTP browser interface). You can safely inspect all nodes, edges, and paths in your live database using `docker compose exec`:
 
@@ -200,7 +243,7 @@ docker compose exec falkordb redis-cli GRAPH.QUERY shortagebridge \
 
 ---
 
-## 8. Graph model and schema
+## 9. Graph model and schema
 
 ```text
 EvidenceSource ──SUPPORTS─→ ShortageRecord ──REPORTS_ON─→ DrugPresentation
@@ -245,7 +288,7 @@ Every node carries a `data_origin` property (`openfda` or `synthetic_demo`) and 
 
 ---
 
-## 9. Important Cypher queries
+## 10. Important Cypher queries
 
 The central multi-hop Cypher query lives in [`lib/impact-query.ts`](./lib/impact-query.ts) and is executed by [`lib/impact.ts`](./lib/impact.ts) with FalkorDB's read-only `roQuery`. The query text is fixed application code; the only input is the `$caseId` parameter, which is validated against the single demo case before the query runs. Browser input never becomes Cypher. The UI shows this same text under **Show the Cypher query FalkorDB runs**.
 
@@ -336,7 +379,7 @@ LIMIT 1
 
 ---
 
-## 10. Public vs. synthetic data boundary
+## 11. Public vs. synthetic data boundary
 
 - **Public Record:** Sourced from the [openFDA Drug Shortages API](https://api.fda.gov/drug/shortages.json?search=package_ndc%3A%220409-4776-01%22&limit=1) for package NDC `0409-4776-01` (`Lidocaine Hydrochloride Injection`). The seed records the exact retrieval timestamp, source update date, and source URL.
 - **Reviewed Mapping:** The link between the public FDA presentation and the synthetic hospital item is explicitly tagged `reviewed_mapping` with a documented rationale. It does not imply that local stock exists.
@@ -344,7 +387,7 @@ LIMIT 1
 
 ---
 
-## 11. Gemini explainer & deterministic fallback boundary
+## 12. Gemini explainer & deterministic fallback boundary
 
 - **Server-Side Only:** Model interaction is handled strictly in server route handlers using the official `@google/genai` TypeScript SDK (`^2.30.0`) with `gemini-3.8-flash`.
 - **Zero Client Trust:** Browser requests cannot submit facts to Gemini. The server re-runs the parameterized Cypher query in FalkorDB and passes only the returned evidence IDs and names.
@@ -353,7 +396,7 @@ LIMIT 1
 
 ---
 
-## 12. Limitations
+## 13. Limitations
 
 - **One demo case.** The app serves a single seeded shortage case (`FDA-DRUGSHORTAGES-0409-4776-01`); other case IDs are rejected with HTTP 400.
 - **Snapshot, not live.** The openFDA fields are a seeded snapshot. `npm run seed` refreshes the retrieval timestamp but does not re-download the record.
@@ -361,23 +404,25 @@ LIMIT 1
 - **Not a clinical tool.** No medical advice, no medication substitution, no ordering, no claim about any real hospital's stock.
 - **The review record is a demo record.** **Mark review complete** writes a synthetic `ReviewAction` node to your local FalkorDB. It records only that a person acknowledged the evidence in this demo. It notifies nobody, changes no protocol, and places no order. Re-running `npm run seed` does not remove these nodes; clear them with `MATCH (a:ReviewAction) DETACH DELETE a` if you want a clean graph before recording.
 - **Gemini is optional.** Without a key, or if the model fails validation, the brief uses the deterministic fallback.
-- **Local-first.** Submitted as a reproducible local Docker setup, with no hosted deployment.
+- **Two supported setups.** The project runs against local FalkorDB in Docker, or against a hosted FalkorDB instance. Both use the same code; only the connection environment variables differ.
 
 ---
 
-## 13. Hackathon disclosures & track fit
+## 14. Hackathon disclosures & track fit
 
 - **Track Alignment:** **Track 01: Agents That Act on Connected Data**. FalkorDB is central to the project, performing multi-hop traversals connecting external public shortage facts to internal operational workflows.
 - **AI Coding Disclosure:**
   - **Google Antigravity IDE and Gemini** were used as pair-programming assistants to scaffold TypeScript boilerplate, schema definitions, and UI styles.
-  - **Claude Code (Anthropic)** was used on submission day to redesign the dashboard UI (the story layout and the step-by-step graph view drawn from FalkorDB path objects), move the impact query into `lib/impact-query.ts` so the UI can display it, implement the `ReviewAction` graph write (`lib/review-action.ts` and `app/api/review-action/route.ts`), and draft README and demo-guide updates.
+  - **Claude Code (Anthropic)** was used on submission day to redesign the dashboard UI (the story layout and the step-by-step graph view drawn from FalkorDB path objects), move the impact query into `lib/impact-query.ts` so the UI can display it, implement the `ReviewAction` graph write (`lib/review-action.ts` and `app/api/review-action/route.ts`), fix environment loading in `scripts/seed.ts`, and draft README and demo-guide updates.
   - The architecture, graph schema, Cypher queries, Zod safety validations, and provenance boundaries were designed by the author, who reviewed and tested all AI-assisted changes.
-- **Runtime AI (separate from coding help):** the app optionally calls Gemini at runtime to word the review brief from graph facts (see section 11).
-- **Cloud / Vercel Note:** This project is submitted as a verified, reproducible local Docker application. Cloud hosting (e.g., Vercel) is optional and is not required for evaluating this submission.
+- **Runtime AI (separate from coding help):** the app optionally calls Gemini at runtime to word the review brief from graph facts (see section 12).
+- **Deployment:** The project supports both a reproducible local Docker setup and deployment to a hosting platform such as Vercel. The live deployment connects to a **hosted FalkorDB instance** rather than a local container; see [section 5](#5-deploying-with-a-hosted-falkordb-instance). Either setup is sufficient to evaluate the submission.
 
 ---
 
-## 14. Quick command cheat sheet
+## 15. Quick command cheat sheet
+
+The `docker compose` commands below apply to the local setup. With a hosted instance, run graph queries from that provider's console instead; `npm run seed`, `npm run dev`, `npm run build`, and `npm run lint` work the same either way.
 
 | Action | Command |
 | :--- | :--- |
